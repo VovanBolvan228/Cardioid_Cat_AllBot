@@ -1,12 +1,10 @@
 import asyncio
 import os
 import json
-from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, types, F
 from aiohttp import web
 
-# Конфигурация из переменных окружения
+# Конфигурация
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
 
@@ -24,7 +22,7 @@ EX_MAP = {
     "вис": "вис", "гант": "гантели на спину", "подт": "подтягиваний"
 }
 
-# --- Работа с базой данных в закрепе ---
+# --- Работа с данными ---
 
 async def get_db_message():
     try:
@@ -32,15 +30,14 @@ async def get_db_message():
         pinned = chat.pinned_message
         if pinned and DB_TAG in (pinned.text or ""):
             return pinned
-    except Exception as e:
-        print(f"Ошибка при поиске закрепа: {e}")
-    return None
+    except:
+        return None
 
 async def load_data():
     msg = await get_db_message()
     if msg:
         try:
-            # Парсим JSON данные из последней строки сообщения
+            # Ищем JSON после значка 📊 в тексте закрепа
             json_part = msg.text.split("📊")[-1].strip()
             return json.loads(json_part)
         except:
@@ -60,32 +57,33 @@ async def save_data(data):
     if not has_debts:
         lines.append("Все долги закрыты! Красавчики.")
 
+    # Добавляем техническую инфу для бота
     lines.append(f"\n{DB_TAG}")
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     text = "\n".join(lines)
-    msg = await get_db_message()
     
     try:
-        if msg:
-            await bot.edit_message_text(text, TARGET_GROUP_ID, msg.message_id, parse_mode="HTML")
-        else:
-            new_msg = await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
-            await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
+        # 1. Открепляем ВСЕ сообщения в чате (чтобы не копились старые закрепы)
+        await bot.unpin_all_chat_messages(TARGET_GROUP_ID)
+        
+        # 2. Отправляем НОВОЕ сообщение
+        new_msg = await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
+        
+        # 3. Закрепляем НОВОЕ сообщение
+        await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
+        
     except Exception as e:
-        print(f"Ошибка при сохранении текста: {e}")
+        print(f"Ошибка при обновлении закрепа: {e}")
 
-# --- ОБРАБОТЧИКИ КОМАНД ---
+# --- ОБРАБОТЧИКИ ---
 
-# 1. @all и @все — работают в ЛЮБОМ чате
 @dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
 async def call_everyone(message: types.Message):
     await message.answer("📢 <b>Внимание всем!</b> ⚡️", parse_mode="HTML")
 
-# 2. Долги — работают ТОЛЬКО в целевой группе
 @dp.message(F.text.startswith("!долг"))
 async def handle_debts(message: types.Message):
-    # Проверка чата
     if message.chat.id != TARGET_GROUP_ID:
         return
 
@@ -104,7 +102,7 @@ async def handle_debts(message: types.Message):
 
     full_name = NAME_MAP.get(name_init)
     if not full_name:
-        await message.answer(f"⚠️ Имя '{name_init}' не найдено в списке (А, Л, В, Н, И).")
+        await message.answer(f"⚠️ Имя '{name_init}' не в списке.")
         return
 
     data = await load_data()
@@ -118,35 +116,24 @@ async def handle_debts(message: types.Message):
     else:
         data[full_name][ex_code] = max(0, current - val)
 
+    # Вызываем сохранение (оно теперь шлет новое сообщение и крепит его)
     await save_data(data)
-    await message.answer(f"✅ Данные обновлены для <b>{full_name}</b>. См. закреп.", parse_mode="HTML")
+    # Ответ бота можно убрать или оставить коротким, так как новое сообщение и так прилетит
+    await message.delete() # Удаляем команду пользователя для чистоты чата
 
-# --- СИСТЕМНЫЕ ФУНКЦИИ ---
-
-async def send_kv_reminder():
-    try:
-        text = "📢 <b>Внимание всем! ВСЕ ИГРАЕМ КВ СЕГОДНЯ!</b>"
-        await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Ошибка рассылки КВ: {e}")
+# --- СЕРВЕР ---
 
 async def health_check(request):
     return web.Response(text="Bot is running")
 
 async def main():
-    # Планировщик КВ
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_kv_reminder, 'cron', day_of_week='thu,fri,sat,sun', hour=21, minute=0)
-    scheduler.start()
-
-    # Веб-сервер для Render (Health Check)
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     
-    print("Бот успешно запущен и готов к работе!")
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
