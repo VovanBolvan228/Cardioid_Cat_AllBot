@@ -4,14 +4,13 @@ import json
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
 from aiohttp import web
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
+SETTINGS_FILE = "settings.json"
 
-# Глобальная переменная для ID (в идеале её стоит хранить в файле или БД, 
-# но для Render пока оставим в памяти — до перезагрузки сервера)
+# Переменная для ID, которая подгрузится из файла
 TARGET_GROUP_ID = None 
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
 
@@ -24,7 +23,23 @@ EX_MAP = {
     "вис": "вис", "гант": "гантели на спину", "подт": "подтягиваний"
 }
 
-# --- Вспомогательные функции ---
+# --- Логика работы с файлом настроек ---
+
+def load_settings():
+    global TARGET_GROUP_ID
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+                TARGET_GROUP_ID = data.get("target_group_id")
+        except:
+            pass
+
+def save_settings(group_id):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump({"target_group_id": group_id}, f)
+
+# --- Вспомогательные функции для БД ---
 
 async def get_db_message():
     if not TARGET_GROUP_ID: return None
@@ -35,7 +50,6 @@ async def get_db_message():
             return pinned
     except:
         return None
-    return None
 
 async def load_data():
     msg = await get_db_message()
@@ -62,7 +76,6 @@ async def save_data(data):
     
     text = "\n".join(lines)
     msg = await get_db_message()
-    
     if msg:
         await bot.edit_message_text(text, TARGET_GROUP_ID, msg.message_id, parse_mode="HTML")
     else:
@@ -71,60 +84,54 @@ async def save_data(data):
 
 # --- ОБРАБОТЧИКИ ---
 
-# 1. ПРИВЯЗКА ЧАТА (только для админов)
+# Привязка чата (только для админов)
 @dp.message(F.text == "!привязать_тренировки")
 async def cmd_link_chat(message: types.Message):
     global TARGET_GROUP_ID
     member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-    
     if member.status in ["creator", "administrator"]:
         TARGET_GROUP_ID = message.chat.id
-        await message.answer(f"✅ Чат привязан! ID: {TARGET_GROUP_ID}\nТеперь команды долгов работают только здесь.")
+        save_settings(TARGET_GROUP_ID) # Сохраняем в файл!
+        await message.answer(f"✅ Чат привязан навсегда!\nID: {TARGET_GROUP_ID}")
     else:
-        await message.reply("❌ Эту команду может выполнить только админ.")
+        await message.reply("❌ Команда только для админов.")
 
-# 2. @ALL / @ВСЕ (РАБОТАЮТ ВЕЗДЕ)
+# @ALL работает везде
 @dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
 async def call_everyone(message: types.Message):
     await message.answer("📢 <b>Внимание всем!</b> ⚡️", parse_mode="HTML")
 
-# 3. ДОЛГИ (ТОЛЬКО В ПРИВЯЗАННОМ ЧАТЕ)
+# Долги работают только в привязанном чате
 @dp.message(lambda msg: TARGET_GROUP_ID and msg.chat.id == TARGET_GROUP_ID, 
             F.text.startswith(("!долг+", "!долг-")))
 async def handle_debts(message: types.Message):
     parts = message.text.split()
     if len(parts) < 4: return
-
     action, name_init, val_str, ex_code = parts[0], parts[1].upper(), parts[2], parts[3].lower()
     try:
         val = int(val_str)
     except: return
-
     full_name = NAME_MAP.get(name_init)
     if not full_name: return
 
     data = await load_data()
     if full_name not in data: data[full_name] = {}
-    current = data[full_name].get(ex_code, 0)
-    data[full_name][ex_code] = (current + val) if "+" in action else max(0, current - val)
-
+    curr = data[full_name].get(ex_code, 0)
+    data[full_name][ex_code] = (curr + val) if "+" in action else max(0, curr - val)
     await save_data(data)
-    await message.answer("✅ Таблица обновлена.")
+    await message.answer("✅ Готово.")
 
-# --- СИСТЕМНОЕ ---
-
-async def send_kv_reminder():
-    if TARGET_GROUP_ID:
-        try:
-            await bot.send_message(TARGET_GROUP_ID, "📢 <b>Внимание всем! ВСЕ ИГРАЕМ КВ СЕГОДНЯ!</b>", parse_mode="HTML")
-        except: pass
+# --- ЗАПУСК ---
 
 async def health_check(request):
     return web.Response(text="Bot is running")
 
 async def main():
+    load_settings() # Загружаем ID из файла при старте
+    
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_kv_reminder, 'cron', day_of_week='thu,fri,sat,sun', hour=21, minute=0)
+    scheduler.add_job(lambda: bot.send_message(TARGET_GROUP_ID, "📢 ВСЕ ИГРАЕМ КВ!"), 
+                      'cron', day_of_week='thu,fri,sat,sun', hour=21, minute=0)
     scheduler.start()
 
     app = web.Application()
