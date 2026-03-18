@@ -15,25 +15,28 @@ FOOTER_TEXT = (
     "(минимум 3 из данной группы, +1 - тот, кто делает), либо на видео!"
 )
 
-# Функция для превращения текста "3:34" или числа секунд в общее кол-во секунд
-def to_seconds(value):
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and ":" in value:
-        try:
-            parts = value.replace(" мин", "").split(":")
-            return int(parts[0]) * 60 + int(parts[1])
-        except:
-            return 0
-    return 0
+# Список упражнений, которые бот считает как ВРЕМЯ
+TIME_EXERCISES = ["план", "вис"]
 
-# Функция для красивого вывода секунд в формат "М:СС мин"
+def to_seconds(value):
+    """Превращает '3:34', '3 мин' или число в секунды."""
+    if isinstance(value, int): return value
+    try:
+        s_val = str(value).lower().replace("мин", "").strip()
+        if ":" in s_val:
+            parts = s_val.split(":")
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(s_val)
+    except: return 0
+
 def from_seconds(total_seconds):
+    """Превращает секунды в формат М:СС."""
+    total_seconds = int(total_seconds)
     minutes = total_seconds // 60
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:02d} мин"
 
-# АКТУАЛЬНЫЕ НАЧАЛЬНЫЕ ДАННЫЕ (в секундах для мат. расчетов)
+# Начальные данные (уже в секундах)
 INITIAL_DATA = {
     "Артём": {"отж": 175, "прис": 100, "план": 180, "вис": 360, "руб": 700},
     "Лиза": {"вис": 214, "гант": 85, "план": 171, "прис": 165},
@@ -51,16 +54,13 @@ EX_MAP = {
     "подт": "подтягиваний", "руб": "рублей"
 }
 
-# Упражнения, которые считаются как время
-TIME_EXERCISES = ["план", "вис"]
-
 async def get_db_message():
     try:
         chat = await bot.get_chat(TARGET_GROUP_ID)
-        pinned = chat.pinned_message
-        if pinned and DB_TAG in (pinned.text or ""):
-            return pinned
-    except: return None
+        if chat.pinned_message and DB_TAG in (chat.pinned_message.text or ""):
+            return chat.pinned_message
+    except: pass
+    return None
 
 async def load_data():
     msg = await get_db_message()
@@ -68,112 +68,88 @@ async def load_data():
         try:
             json_part = msg.text.split("📊")[-1].strip()
             return json.loads(json_part)
-        except: return INITIAL_DATA
+        except: pass
     return INITIAL_DATA
 
 async def save_data(data):
     lines = [f"{DB_TAG}", "<b>ДОЛГИ!!!</b>\n"]
-    
     for name, exercises in data.items():
         ex_list = []
         for ex, val in exercises.items():
             if val == 0: continue
             label = EX_MAP.get(ex, ex)
-            
-            # Если это время — выводим красиво (М:СС)
-            if ex in TIME_EXERCISES:
-                ex_list.append(f"{from_seconds(val)} {label}")
-            else:
-                ex_list.append(f"{val} {label}")
-        
-        if ex_list:
-            lines.append(f"<b>{name}</b> - {', '.join(ex_list)}")
-        else:
-            lines.append(f"<b>{name}</b> - долгов нет")
-
-    lines.append(FOOTER_TEXT)
-    lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
+            display_val = from_seconds(val) if ex in TIME_EXERCISES else val
+            ex_list.append(f"{display_val} {label}")
+        lines.append(f"<b>{name}</b> - {', '.join(ex_list) if ex_list else 'долгов нет'}")
     
-    text = "\n".join(lines)
+    lines.append(FOOTER_TEXT)
+    # Скрытый JSON для базы
+    lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     try:
         await bot.unpin_all_chat_messages(TARGET_GROUP_ID)
-        new_msg = await bot.send_message(TARGET_GROUP_ID, text, parse_mode="HTML")
+        new_msg = await bot.send_message(TARGET_GROUP_ID, "\n".join(lines), parse_mode="HTML")
         await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
     except Exception as e:
-        print(f"Ошибка закрепа: {e}")
-
-# --- ОБРАБОТЧИКИ ---
-
-@dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
-async def call_everyone(message: types.Message):
-    await message.answer("📢 <b>Внимание всем!</b> ⚡️", parse_mode="HTML")
+        print(f"Error in save: {e}")
 
 @dp.message(F.text.startswith("!добавить"))
 async def add_person(message: types.Message):
     if message.chat.id != TARGET_GROUP_ID: return
     parts = message.text.split()
-    if len(parts) < 2: return
-    name, data = parts[1], await load_data()
-    if name not in data:
-        data[name] = {}
+    if len(parts) > 1:
+        data = await load_data()
+        data[parts[1]] = {}
         await save_data(data)
-        await message.answer(f"✅ {name} добавлен.")
 
 @dp.message(F.text.startswith("!удалить"))
 async def remove_person(message: types.Message):
     if message.chat.id != TARGET_GROUP_ID: return
     parts = message.text.split()
-    if len(parts) < 2: return
-    name, data = parts[1], await load_data()
-    found_name = next((k for k in data.keys() if k.lower() == name.lower()), None)
-    if found_name:
-        del data[found_name]
+    if len(parts) > 1:
+        data = await load_data()
+        data.pop(parts[1], None)
         await save_data(data)
-        await message.answer(f"❌ {found_name} удален.")
 
 @dp.message(F.text.startswith("!долг"))
 async def handle_debts(message: types.Message):
     if message.chat.id != TARGET_GROUP_ID: return
     parts = message.text.split()
-    
-    # Очистка: !долг- А очистить
-    if len(parts) == 3 and parts[0] == "!долг-" and parts[2].lower() == "очистить":
-        name_input = parts[1].upper()
-        name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
-        full_name = name_map.get(name_input, parts[1])
-        data = await load_data()
-        if full_name in data:
-            data[full_name] = {}
-            await save_data(data)
-            return await message.answer(f"🧹 Долги {full_name} очищены.")
-
-    if len(parts) < 4: return
-    action, name_init, val_str, ex_code = parts[0], parts[1].upper(), parts[2], parts[3].lower()
-    name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
-    full_name = name_map.get(name_init, name_init)
-    
     data = await load_data()
+    name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
+    
+    # Очистка
+    if len(parts) == 3 and parts[2].lower() == "очистить":
+        name = name_map.get(parts[1].upper(), parts[1])
+        if name in data:
+            data[name] = {}
+            await save_data(data)
+            return
+
+    # Изменение долга
+    if len(parts) < 4: return
+    full_name = name_map.get(parts[1].upper(), parts[1])
+    val = to_seconds(parts[2])
+    ex = parts[3].lower()
+
     if full_name not in data: data[full_name] = {}
+    current = to_seconds(data[full_name].get(ex, 0))
     
-    # Логика расчета
-    current_val = to_seconds(data[full_name].get(ex_code, 0))
-    
-    # Если ввели время (1:30), переводим в секунды, если просто число — оставляем числом
-    input_val = to_seconds(val_str) if ":" in val_str else int(val_str)
-
-    if "+" in action:
-        data[full_name][ex_code] = current_val + input_val
+    if "+" in parts[0]:
+        data[full_name][ex] = current + val
     else:
-        data[full_name][ex_code] = max(0, current_val - input_val)
-
+        data[full_name][ex] = max(0, current - val)
+    
     await save_data(data)
     try: await message.delete()
     except: pass
 
+async def handle_ping(request):
+    return web.Response(text="OK")
+
 async def main():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="OK"))
+    app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
