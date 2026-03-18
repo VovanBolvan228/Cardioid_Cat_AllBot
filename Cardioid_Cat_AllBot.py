@@ -15,28 +15,15 @@ FOOTER_TEXT = (
     "(минимум 3 из данной группы, +1 - тот, кто делает), либо на видео!"
 )
 
-# Список упражнений, которые бот считает как ВРЕМЯ
+# Список упражнений со временем
 TIME_EXERCISES = ["план", "вис"]
-
-def to_seconds(value):
-    """Превращает '3:34', '3 мин' или число в секунды."""
-    if isinstance(value, int): return value
-    try:
-        s_val = str(value).lower().replace("мин", "").strip()
-        if ":" in s_val:
-            parts = s_val.split(":")
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(s_val)
-    except: return 0
 
 def from_seconds(total_seconds):
     """Превращает секунды в формат М:СС."""
-    total_seconds = int(total_seconds)
-    minutes = total_seconds // 60
-    seconds = total_seconds % 60
-    return f"{minutes}:{seconds:02d} мин"
+    ts = int(total_seconds)
+    return f"{ts // 60}:{ts % 60:02d} мин"
 
-# Начальные данные (уже в секундах)
+# Начальные данные (в секундах для времени, в числах для остального)
 INITIAL_DATA = {
     "Артём": {"отж": 175, "прис": 100, "план": 180, "вис": 360, "руб": 700},
     "Лиза": {"вис": 214, "гант": 85, "план": 171, "прис": 165},
@@ -54,21 +41,13 @@ EX_MAP = {
     "подт": "подтягиваний", "руб": "рублей"
 }
 
-async def get_db_message():
+async def load_data():
     try:
         chat = await bot.get_chat(TARGET_GROUP_ID)
         if chat.pinned_message and DB_TAG in (chat.pinned_message.text or ""):
-            return chat.pinned_message
-    except: pass
-    return None
-
-async def load_data():
-    msg = await get_db_message()
-    if msg:
-        try:
-            json_part = msg.text.split("📊")[-1].strip()
+            json_part = chat.pinned_message.text.split("📊")[-1].strip()
             return json.loads(json_part)
-        except: pass
+    except: pass
     return INITIAL_DATA
 
 async def save_data(data):
@@ -83,73 +62,90 @@ async def save_data(data):
         lines.append(f"<b>{name}</b> - {', '.join(ex_list) if ex_list else 'долгов нет'}")
     
     lines.append(FOOTER_TEXT)
-    # Скрытый JSON для базы
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     try:
         await bot.unpin_all_chat_messages(TARGET_GROUP_ID)
         new_msg = await bot.send_message(TARGET_GROUP_ID, "\n".join(lines), parse_mode="HTML")
         await bot.pin_chat_message(TARGET_GROUP_ID, new_msg.message_id)
-    except Exception as e:
-        print(f"Error in save: {e}")
+    except: pass
 
 @dp.message(F.text.startswith("!добавить"))
-async def add_person(message: types.Message):
-    if message.chat.id != TARGET_GROUP_ID: return
-    parts = message.text.split()
-    if len(parts) > 1:
-        data = await load_data()
-        data[parts[1]] = {}
-        await save_data(data)
+async def add_p(m: types.Message):
+    if m.chat.id != TARGET_GROUP_ID: return
+    p = m.text.split()
+    if len(p) > 1:
+        d = await load_data()
+        d[p[1]] = d.get(p[1], {})
+        await save_data(d)
 
 @dp.message(F.text.startswith("!удалить"))
-async def remove_person(message: types.Message):
-    if message.chat.id != TARGET_GROUP_ID: return
-    parts = message.text.split()
-    if len(parts) > 1:
-        data = await load_data()
-        data.pop(parts[1], None)
-        await save_data(data)
+async def rem_p(m: types.Message):
+    if m.chat.id != TARGET_GROUP_ID: return
+    p = m.text.split()
+    if len(p) > 1:
+        d = await load_data()
+        d.pop(p[1], None)
+        await save_data(d)
 
 @dp.message(F.text.startswith("!долг"))
-async def handle_debts(message: types.Message):
-    if message.chat.id != TARGET_GROUP_ID: return
-    parts = message.text.split()
+async def handle_debts(m: types.Message):
+    if m.chat.id != TARGET_GROUP_ID: return
+    parts = m.text.split()
     data = await load_data()
-    name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
+    n_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
     
-    # Очистка
     if len(parts) == 3 and parts[2].lower() == "очистить":
-        name = name_map.get(parts[1].upper(), parts[1])
+        name = n_map.get(parts[1].upper(), parts[1])
         if name in data:
             data[name] = {}
             await save_data(data)
             return
 
-    # Изменение долга
     if len(parts) < 4: return
-    full_name = name_map.get(parts[1].upper(), parts[1])
-    val = to_seconds(parts[2])
+    name = n_map.get(parts[1].upper(), parts[1])
+    val_raw = parts[2]
     ex = parts[3].lower()
 
-    if full_name not in data: data[full_name] = {}
-    current = to_seconds(data[full_name].get(ex, 0))
+    if name not in data: data[name] = {}
+
+    # ПРОВЕРКА ВВОДА
+    final_val = 0
+    if ex in TIME_EXERCISES:
+        # Для времени разрешаем 1:30 или просто секунды
+        try:
+            if ":" in val_raw:
+                m_parts = val_raw.split(":")
+                final_val = int(m_parts[0]) * 60 + int(m_parts[1])
+            else:
+                final_val = int(val_raw)
+        except:
+            return await m.answer("⚠️ Ошибка! Время пиши как 1:30 или просто секунды.")
+    else:
+        # Для отжиманий и прочего — только целые числа
+        if ":" in val_raw:
+            return await m.answer(f"⚠️ Ошибка! Для {ex} нельзя использовать формат времени (двоеточие).")
+        try:
+            final_val = int(val_raw)
+        except:
+            return await m.answer("⚠️ Ошибка! Введи целое число.")
+
+    current = data[name].get(ex, 0)
+    # Если в базе была строка (старый баг), сбрасываем в 0
+    if not isinstance(current, (int, float)): current = 0
     
     if "+" in parts[0]:
-        data[full_name][ex] = current + val
+        data[name][ex] = current + final_val
     else:
-        data[full_name][ex] = max(0, current - val)
-    
-    await save_data(data)
-    try: await message.delete()
-    except: pass
+        data[name][ex] = max(0, current - final_val)
 
-async def handle_ping(request):
-    return web.Response(text="OK")
+    await save_data(data)
+    try: await m.delete()
+    except: pass
 
 async def main():
     app = web.Application()
-    app.router.add_get("/", handle_ping)
+    app.router.add_get("/", lambda r: web.Response(text="OK"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
