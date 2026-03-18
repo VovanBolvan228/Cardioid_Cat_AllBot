@@ -10,29 +10,28 @@ PORT = int(os.getenv("PORT", 10000))
 TARGET_GROUP_ID = -1003773374182 
 DB_TAG = "#DATABASE_EXERCISE_BOT#"
 
-# Твой текст про расчет (футер)
 FOOTER_TEXT = (
     "\nРасчёт по долгам происходит только при свидетелях "
     "(минимум 3 из данной группы, +1 - тот, кто делает), либо на видео!"
 )
 
-# ИСПРАВЛЕННЫЕ НАЧАЛЬНЫЕ ДАННЫЕ (как на скрине 01:24)
+# АКТУАЛЬНЫЕ НАЧАЛЬНЫЕ ДАННЫЕ
 INITIAL_DATA = {
-    "Артём": {"отж": 175, "прис": 100, "план": "3мин", "вис": "6мин", "деньги": "700р"},
-    "Лиза": {"вис": "34 секунды", "гант": 85, "план": "2:51мин", "прис": 165, "вис_турник": "3 мин"},
-    "Вова": {"план": "2мин", "гант": 50, "отж": 25, "прис": 100},
+    "Артём": {"отж": 175, "прис": 100, "план": "3 мин", "вис": "6 мин", "руб": 700},
+    "Лиза": {"вис": "3:34 мин", "гант": 85, "план": "2:51 мин", "прис": 165},
+    "Вова": {"план": "2 мин", "гант": 50, "отж": 25, "прис": 100},
     "Настя": {"гант": 100, "отж": 100, "прис": 100},
-    "Игорь": {"подт": 30, "план": "3мин", "прис": 100}
+    "Игорь": {"подт": 30, "план": "3 мин", "прис": 100}
 }
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-NAME_MAP = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
+# Словарь для расшифровки кодов в красивые названия
 EX_MAP = {
     "отж": "отжиманий", "прис": "приседаний", "план": "планка",
     "вис": "вис", "гант": "гантели на спину (каждая рука)", 
-    "подт": "подтягиваний", "деньги": "долг", "вис_турник": "вис на турнике"
+    "подт": "подтягиваний", "руб": "рублей"
 }
 
 async def get_db_message():
@@ -59,17 +58,15 @@ async def save_data(data):
         ex_list = []
         for ex, val in exercises.items():
             label = EX_MAP.get(ex, ex)
-            # Если значение число — пишем "50 отжиманий", если строка — "3мин планка"
-            if isinstance(val, int):
-                ex_list.append(f"{val} {label}")
-            else:
+            if val != 0: # Не выводим обнуленные позиции
                 ex_list.append(f"{val} {label}")
         
         if ex_list:
             lines.append(f"<b>{name}</b> - {', '.join(ex_list)}")
+        else:
+            lines.append(f"<b>{name}</b> - долгов нет")
 
     lines.append(FOOTER_TEXT)
-    # Скрытая часть для базы данных
     lines.append(f"\n📊 {json.dumps(data, ensure_ascii=False)}")
     
     text = "\n".join(lines)
@@ -81,36 +78,79 @@ async def save_data(data):
     except Exception as e:
         print(f"Ошибка закрепа: {e}")
 
+# --- ОБРАБОТЧИКИ КОМАНД ---
+
 @dp.message(F.text.lower().contains("@all") | F.text.lower().contains("@все"))
 async def call_everyone(message: types.Message):
     await message.answer("📢 <b>Внимание всем!</b> ⚡️", parse_mode="HTML")
 
+# Добавление человека: !добавить Гена
+@dp.message(F.text.startswith("!добавить"))
+async def add_person(message: types.Message):
+    if message.chat.id != TARGET_GROUP_ID: return
+    parts = message.text.split()
+    if len(parts) < 2: return
+    
+    name = parts[1]
+    data = await load_data()
+    if name not in data:
+        data[name] = {}
+        await save_data(data)
+        await message.answer(f"✅ {name} добавлен в список.")
+    else:
+        await message.answer(f"⚠️ {name} уже есть в списке.")
+
+# Удаление человека: !удалить Гена
+@dp.message(F.text.startswith("!удалить"))
+async def remove_person(message: types.Message):
+    if message.chat.id != TARGET_GROUP_ID: return
+    parts = message.text.split()
+    if len(parts) < 2: return
+    
+    name = parts[1]
+    data = await load_data()
+    # Ищем имя (с учетом регистра или без)
+    found_name = next((k for k in data.keys() if k.lower() == name.lower()), None)
+    
+    if found_name:
+        del data[found_name]
+        await save_data(data)
+        await message.answer(f"❌ {found_name} удален из списка.")
+    else:
+        await message.answer(f"⚠️ Имя {name} не найдено.")
+
+# Управление долгами
 @dp.message(F.text.startswith("!долг"))
 async def handle_debts(message: types.Message):
-    if message.chat.id != TARGET_GROUP_ID:
-        return
-
+    if message.chat.id != TARGET_GROUP_ID: return
     parts = message.text.split()
-    if len(parts) < 4:
-        await message.answer("⚠️ Формат: !долг+ А 50 отж")
-        return
+    
+    # Проверка на очистку: !долг- А очистить
+    if len(parts) == 3 and parts[0] == "!долг-" and parts[2].lower() == "очистить":
+        name_input = parts[1].upper()
+        name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
+        full_name = name_map.get(name_input, parts[1])
+        
+        data = await load_data()
+        if full_name in data:
+            data[full_name] = {}
+            await save_data(data)
+            return await message.answer(f"🧹 Все долги {full_name} очищены.")
+
+    if len(parts) < 4: return
 
     action, name_init, val_str, ex_code = parts[0], parts[1].upper(), parts[2], parts[3].lower()
+    name_map = {"А": "Артём", "Л": "Лиза", "В": "Вова", "Н": "Настя", "И": "Игорь"}
+    full_name = name_map.get(name_init, parts[1])
     
     try:
         val = int(val_str)
-    except:
-        await message.answer("⚠️ Ошибка: количество должно быть целым числом.")
-        return
-
-    full_name = NAME_MAP.get(name_init)
-    if not full_name: return
+    except: return
 
     data = await load_data()
     if full_name not in data: data[full_name] = {}
     
     current = data[full_name].get(ex_code, 0)
-    # Если в базе строка (как "3мин"), а мы прибавляем число, сбрасываем в 0 и считаем
     if not isinstance(current, int): current = 0 
     
     if "+" in action:
@@ -119,9 +159,10 @@ async def handle_debts(message: types.Message):
         data[full_name][ex_code] = max(0, current - val)
 
     await save_data(data)
-    await message.delete()
+    try: await message.delete()
+    except: pass
 
-async def health_check(request): return web.Response(text="Bot Active")
+async def health_check(request): return web.Response(text="OK")
 
 async def main():
     app = web.Application()
