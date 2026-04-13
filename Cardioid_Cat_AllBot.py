@@ -71,11 +71,10 @@ async def send_kv_reminder():
     for chat_id in TARGET_GROUP_IDS:
         members = get_all_members(chat_id)
         if members:
-            # Скрытые упоминания через \u2060
-            mentions = "".join([f'<a href="tg://user?id={uid}">\u2060</a>' for uid in members])
-            text = f"📢 <b>Внимание всем!</b> Сегодня играем КВ! ⚡️{mentions}"
-        else:
-            text = "📢 <b>Внимание всем!</b> Сегодня играем КВ! ⚡️"
+    mentions = "".join([f'<a href="tg://user?id={uid}">\u2060</a>' for uid in members])
+    text = f"📢 @all {mentions}\n<b>Внимание всем!</b> Сегодня играем КВ! ⚡️"
+else:
+    text = "📢 @all\n<b>Внимание всем!</b> Сегодня играем КВ! ⚡️"
         try:
             await bot.send_message(chat_id, text, parse_mode="HTML")
         except Exception as e:
