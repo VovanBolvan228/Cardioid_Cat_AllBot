@@ -94,10 +94,10 @@ async def track_and_call(m: types.Message):
     if m.text and ("@all" in m.text.lower() or "@все" in m.text.lower()):
         members = get_all_members(chat_id)
         if members:
-            mentions = "".join([f'<a href="tg://user?id={uid}">\u2060</a>' for uid in members])
-            await m.answer(f"📢 <b>Внимание всем!</b> ⚡️{mentions}", parse_mode="HTML")
-        else:
-            await m.answer("📢 Пока нет участников для упоминания.", parse_mode="HTML")
+    mentions = "".join([f'<a href="tg://user?id={uid}">\u2060</a>' for uid in members])
+    await m.answer(f"📢 @all {mentions}\n<b>Внимание всем!</b> ⚡️", parse_mode="HTML")
+else:
+    await m.answer("📢 @all\n<b>Внимание всем!</b> ⚡️", parse_mode="HTML")
 
 # === ЗАПУСК ===
 
